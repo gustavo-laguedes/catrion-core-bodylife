@@ -107,6 +107,24 @@ window.setActiveSidebar = setActiveSidebar;
 function navigateFromSidebar(route, reportView = "") {
   if (!route) return;
 
+  function navigateFromSidebar(route, reportView = "") {
+  if (!route) return;
+
+  if ((route === "relatorios" || route === "contas") && !window.CoreAuth?.can?.("canViewReports")) {
+    return;
+  }
+
+  window.CoreRouterState = window.CoreRouterState || {};
+  window.CoreRouterState.reportsInitialView = "";
+
+  router.go(route);
+  setActiveSidebar(route);
+
+  if (isMobileViewport()) {
+    closeMobileMenu();
+  }
+}
+
   window.CoreRouterState = window.CoreRouterState || {};
   window.CoreRouterState.reportsInitialView = "";
 
