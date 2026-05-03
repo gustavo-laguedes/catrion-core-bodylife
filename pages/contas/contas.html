@@ -1,0 +1,34 @@
+<div class="small-card contas-page">
+  <div class="contas-hero">
+    <div>
+      <div class="small-title">
+        <span class="ico">💸</span>
+        Contas a Pagar
+      </div>
+      <div class="contas-hero-sub">
+        Gestão financeira com calendário, alertas, categorias e pagamentos
+      </div>
+    </div>
+
+    <div class="contas-hero-actions">
+      <button class="r-btn primary" id="apQuickNew">+ Nova conta</button>
+      <button class="r-btn" id="apQuickCSV">CSV</button>
+      <button class="r-btn" id="apQuickPDF">PDF</button>
+    </div>
+  </div>
+
+  <div id="contasContent"></div>
+
+  <div class="r-overlay hidden" id="rModal">
+    <div class="r-modal">
+      <div class="r-modal-head">
+        <div class="r-modal-title" id="rModalTitle">Detalhes</div>
+        <button class="r-x" id="rModalClose">✕</button>
+      </div>
+      <div class="r-modal-body" id="rModalBody"></div>
+      <div class="r-modal-actions">
+        <button class="r-btn" id="rModalOk">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>

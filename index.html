@@ -58,6 +58,12 @@
       <span class="sidebar-text">Caixa</span>
     </button>
 
+    <button class="sidebar-link" type="button" data-route="contas" id="btnSidebarContas" title="Contas a Pagar">
+  <span class="sidebar-ico">💸</span>
+  <span class="sidebar-text">Contas a Pagar</span>
+  <span class="sidebar-lock hidden" id="contasLock">🔒</span>
+</button>
+
     <button class="sidebar-link" type="button" data-route="relatorios" id="btnSidebarReports" title="Relatórios">
       <span class="sidebar-ico">📊</span>
       <span class="sidebar-text">Relatórios</span>
@@ -98,7 +104,7 @@
       class="sidebar-footer-logo"
     />
 
-    <div class="sidebar-footer-sub">v1.2.1 • 2026-04-20</div>
+    <div class="sidebar-footer-sub">v1.3.0 • 2026-05-03</div>
   </div>
 </aside>
 
@@ -587,6 +593,7 @@
   <script src="shared/store/stock.js"></script>
   <script src="shared/store/sales.js"></script>
   <script src="pages/relatorios/relatorios.js?v=20260304_01"></script>
+  <script src="pages/contas/contas.js?v=20260420_01"></script>
   <script src="pages/login/login.js"></script>
   <script src="shared/adminApi.js"></script>
   <script src="app.js"></script>

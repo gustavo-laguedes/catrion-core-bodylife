@@ -44,8 +44,10 @@
       }
     };
 
-    const reportsBtn = document.getElementById("btnSidebarReports");
+   const reportsBtn = document.getElementById("btnSidebarReports");
 const reportsLock = document.getElementById("reportsLock");
+const contasBtn = document.getElementById("btnSidebarContas");
+const contasLock = document.getElementById("contasLock");
 const canViewReports = !!window.CoreAuth?.can?.("canViewReports");
 
 if (reportsBtn) {
@@ -56,6 +58,16 @@ if (reportsBtn) {
 
 if (reportsLock) {
   reportsLock.classList.toggle("hidden", canViewReports);
+}
+
+if (contasBtn) {
+  contasBtn.classList.toggle("is-locked", !canViewReports);
+  contasBtn.disabled = !canViewReports;
+  contasBtn.title = canViewReports ? "" : "Seu perfil não possui acesso a Contas a Pagar.";
+}
+
+if (contasLock) {
+  contasLock.classList.toggle("hidden", canViewReports);
 }
     
   }

@@ -104,8 +104,11 @@ function setActiveSidebar(routeName) {
 
 window.setActiveSidebar = setActiveSidebar;
 
-function navigateFromSidebar(route) {
+function navigateFromSidebar(route, reportView = "") {
   if (!route) return;
+
+  window.CoreRouterState = window.CoreRouterState || {};
+  window.CoreRouterState.reportsInitialView = "";
 
   router.go(route);
   setActiveSidebar(route);
@@ -123,7 +126,8 @@ document.addEventListener("click", (e) => {
   e.stopPropagation();
 
   const route = navBtn.dataset.route;
-  navigateFromSidebar(route);
+  const reportView = navBtn.dataset.reportView || "";
+  navigateFromSidebar(route, reportView);
 });
 
 const coreSidebarEl = document.querySelector(".core-sidebar");
@@ -137,7 +141,8 @@ if (coreSidebarEl) {
     e.stopPropagation();
 
     const route = navBtn.dataset.route;
-    navigateFromSidebar(route);
+    const reportView = navBtn.dataset.reportView || "";
+    navigateFromSidebar(route, reportView);
   }, { passive: false });
 }
 

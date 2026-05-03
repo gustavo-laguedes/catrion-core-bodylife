@@ -1070,8 +1070,21 @@ function renderResultado(){
     saveReportRange(rStart.value, rEnd.value);
 
     // --- vendas
-    const events = await loadCashEvents(s, e);
-    const sales = onlyActiveSales(events).filter(x => x.at && inRange(x.at, s, e));
+   const events = await loadCashEvents(s, e);
+
+const cancelledSaleIds = await getCancelledSaleIdsInRange(
+  s.toISOString(),
+  e.toISOString()
+);
+
+const sales = onlyActiveSales(events).filter(x => {
+  if (!x.at || !inRange(x.at, s, e)) return false;
+
+  const saleKey = String(x.saleId || x.id || "").trim();
+  if (saleKey && cancelledSaleIds.has(saleKey)) return false;
+
+  return true;
+});
     const k = calcKpis(sales);
 
     // --- contas pagas no período
@@ -1970,7 +1983,20 @@ draw();
     saveReportRange(pStart.value, pEnd.value);
 
     const events = await loadCashEvents(s, e);
-    const sales = onlyActiveSales(events).filter(x => x.at && inRange(x.at, s, e));
+
+const cancelledSaleIds = await getCancelledSaleIdsInRange(
+  s.toISOString(),
+  e.toISOString()
+);
+
+const sales = onlyActiveSales(events).filter(x => {
+  if (!x.at || !inRange(x.at, s, e)) return false;
+
+  const saleKey = String(x.saleId || x.id || "").trim();
+  if (saleKey && cancelledSaleIds.has(saleKey)) return false;
+
+  return true;
+});
 
     const map = new Map(); // key -> {name, sku, qty, total, image}
     for (const sale of sales){
@@ -2477,7 +2503,20 @@ draw();
       saveReportRange(clStart.value, clEnd.value);
 
       const events = await loadCashEvents(s, e);
-      const sales = onlyActiveSales(events).filter(x => x.at && inRange(x.at, s, e));
+
+const cancelledSaleIds = await getCancelledSaleIdsInRange(
+  s.toISOString(),
+  e.toISOString()
+);
+
+const sales = onlyActiveSales(events).filter(x => {
+  if (!x.at || !inRange(x.at, s, e)) return false;
+
+  const saleKey = String(x.saleId || x.id || "").trim();
+  if (saleKey && cancelledSaleIds.has(saleKey)) return false;
+
+  return true;
+});
 
       const map = new Map(); // id -> {id,name,total,count}
       for (const sale of sales){
@@ -3193,13 +3232,22 @@ function renderCupons(){
 
     saveReportRange(cpStart.value, cpEnd.value);
 
-    const events = await loadCashEvents(s, e);
+   const events = await loadCashEvents(s, e);
 
-// ✅ só sales ativas no período
+const cancelledSaleIds = await getCancelledSaleIdsInRange(
+  s.toISOString(),
+  e.toISOString()
+);
+
 const sales = onlyActiveSales(events).filter(ev => {
   const iso = ev.at || ev.createdAt;
   if (!iso) return false;
-  return inRange(iso, s, e);
+  if (!inRange(iso, s, e)) return false;
+
+  const saleKey = String(ev.saleId || ev.id || "").trim();
+  if (saleKey && cancelledSaleIds.has(saleKey)) return false;
+
+  return true;
 });
 
     const ranking = buildCouponsRanking(sales);
@@ -4258,27 +4306,271 @@ function openCupomModal(code, data){
   `);
 }
 
+async function loadProductsForStockValue(){
+  try{
+    if (window.ProductsStore?.list){
+      return await window.ProductsStore.list({
+        limit: 5000,
+        orderBy: "name",
+        ascending: true
+      });
+    }
+
+    if (window.CoreProducts?.list){
+      return await window.CoreProducts.list();
+    }
+
+    if (window.CoreInventory?.getProducts){
+      return window.CoreInventory.getProducts();
+    }
+
+    const local = JSON.parse(localStorage.getItem("core.products.v1") || "[]");
+    if (Array.isArray(local) && local.length) return local;
+
+    const sb =
+      window.sb ||
+      window.supabase ||
+      window.supabaseClient ||
+      window.CoreSupabase ||
+      window.coreSupabase ||
+      null;
+
+    if (sb?.from){
+      const { data, error } = await sb
+        .from("products")
+        .select("*")
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+      return Array.isArray(data) ? data : [];
+    }
+
+    return [];
+  }catch(err){
+    console.error("[VALOR ESTOQUE] erro ao carregar produtos:", err);
+    return [];
+  }
+}
+
+function getProductStockQty(p){
+  return Number(
+    p.stockOnHand ??
+    p.stock_on_hand ??
+    p.stock ??
+    p.qty ??
+    p.quantity ??
+    0
+  ) || 0;
+}
+
+function getProductCostValue(p){
+  if (p.costCents != null) return Number(p.costCents || 0) / 100;
+  if (p.cost_cents != null) return Number(p.cost_cents || 0) / 100;
+
+  return Number(
+    p.cost ??
+    p.costPrice ??
+    p.cost_price ??
+    p.purchasePrice ??
+    p.purchase_price ??
+    0
+  ) || 0;
+}
+
+function getProductName(p){
+  return p.name || p.title || p.description || p.product_name || "Produto sem nome";
+}
+
+function getProductSku(p){
+  return p.sku || p.barcode || p.code || p.id || "—";
+}
+
+function getProductCategory(p){
+  return p.cat || p.category || p.category_name || p.group || "Sem categoria";
+}
+
+async function renderValorEstoque(){
+  content.innerHTML = `
+    <div class="r-card">
+      <div class="r-head">
+        <div>
+          <div class="r-title"><span class="ico">📦</span> Valor de Estoque</div>
+          <div class="r-sub">Valor financeiro do estoque atual com base no custo cadastrado dos produtos.</div>
+        </div>
+
+        <div class="r-filters">
+          <button class="r-btn" id="veExportCSV">CSV</button>
+          <button class="r-btn" id="veExportPDF">PDF</button>
+        </div>
+      </div>
+
+      <div class="r-kpis">
+        <div class="r-kpi r-kpi-highlight">
+          <div class="k">Valor total em estoque</div>
+          <div class="v" id="veTotal">—</div>
+        </div>
+
+        <div class="r-kpi">
+          <div class="k">Produtos diferentes</div>
+          <div class="v" id="veProdutos">—</div>
+        </div>
+
+        <div class="r-kpi">
+          <div class="k">Quantidade total</div>
+          <div class="v" id="veQtd">—</div>
+        </div>
+
+        <div class="r-kpi">
+          <div class="k">Maior valor em estoque</div>
+          <div class="v" id="veMaior">—</div>
+        </div>
+      </div>
+
+      <div class="hr" style="margin:12px 0;"></div>
+
+      <div id="veList" style="display:grid;gap:10px;"></div>
+    </div>
+  `;
+
+  const products = await loadProductsForStockValue();
+
+  const rows = products
+    .map(p => {
+      const qty = getProductStockQty(p);
+      const cost = getProductCostValue(p);
+      const total = qty * cost;
+
+      return {
+        name: getProductName(p),
+        sku: getProductSku(p),
+        category: getProductCategory(p),
+        qty,
+        cost,
+        total
+      };
+    })
+    .filter(p => p.qty > 0)
+    .sort((a,b) => b.total - a.total);
+
+  const totalValue = rows.reduce((acc, p) => acc + p.total, 0);
+  const totalQty = rows.reduce((acc, p) => acc + p.qty, 0);
+  const maior = rows[0];
+
+  document.getElementById("veTotal").textContent = moneyBR(totalValue);
+  document.getElementById("veProdutos").textContent = String(rows.length);
+  document.getElementById("veQtd").textContent = String(totalQty);
+  document.getElementById("veMaior").textContent = maior ? moneyBR(maior.total) : "—";
+
+  const veList = document.getElementById("veList");
+
+  if (!rows.length){
+    veList.innerHTML = `
+      <div style="color:#64748b;font-weight:800;">
+        Nenhum produto com estoque positivo encontrado.
+      </div>
+    `;
+    return;
+  }
+
+  veList.innerHTML = rows.map((p, idx) => `
+    <div class="r-row" style="cursor:default;">
+      <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;">
+        <div style="min-width:0;">
+          <div class="t">${idx + 1}º • ${p.name}</div>
+          <div class="m">
+            SKU: <b>${p.sku}</b>
+            • Categoria: <b>${p.category}</b>
+            • Qtd: <b>${p.qty}</b>
+            • Custo un.: <b>${moneyBR(p.cost)}</b>
+          </div>
+        </div>
+
+        <div style="font-weight:950;color:#0f172a;white-space:nowrap;">
+          ${moneyBR(p.total)}
+        </div>
+      </div>
+    </div>
+  `).join("");
+
+  const headers = ["Produto", "SKU", "Categoria", "Qtd em estoque", "Custo unitário", "Valor total"];
+  const exportRows = rows.map(p => [
+    p.name,
+    p.sku,
+    p.category,
+    p.qty,
+    n2(p.cost),
+    n2(p.total)
+  ]);
+
+  document.getElementById("veExportCSV").onclick = () => {
+    downloadCSV("valor_estoque_atual", headers, exportRows);
+  };
+
+  document.getElementById("veExportPDF").onclick = () => {
+    openPrintPDF(
+      "Valor de Estoque",
+      `Estoque atual • Total: ${moneyBR(totalValue)} • Produtos: ${rows.length}`,
+      headers,
+      exportRows
+    );
+  };
+}
+
 
   // ===== menu =====
-  document.querySelectorAll(".report-tile").forEach(btn => {
+ document.querySelectorAll(".report-tile").forEach(btn => {
   btn.addEventListener("click", () => {
     const view = btn.getAttribute("data-view");
 
-if (view === "dashboard") renderDashboard();
-else if (view === "vendas") renderVendas();
-else if (view === "vendedores") renderVendedores();
-else if (view === "produtos") renderProdutos();
-else if (view === "clientes") renderClientes();
-else if (view === "estoque") renderEstoque();   // ✅ AQUI
-else if (view === "cupons") renderCupons(); // ✅ ADICIONA ESSA LINHA
-else if (view === "contasPagar") renderContasPagar();
-else if (view === "resultado") renderResultado();
+    window.CoreRouterState = window.CoreRouterState || {};
+    window.CoreRouterState.reportsInitialView = view;
 
-else renderPlaceholder("Escolha um relatório", "Clique em um card acima para abrir.");
-
+    if (view === "dashboard") {
+      window.setActiveSidebar?.("relatorios");
+      renderDashboard();
+    }
+    else if (view === "vendas") {
+      window.setActiveSidebar?.("relatorios");
+      renderVendas();
+    }
+    else if (view === "vendedores") {
+      window.setActiveSidebar?.("relatorios");
+      renderVendedores();
+    }
+    else if (view === "produtos") {
+      window.setActiveSidebar?.("relatorios");
+      renderProdutos();
+    }
+    else if (view === "clientes") {
+      window.setActiveSidebar?.("relatorios");
+      renderClientes();
+    }
+    else if (view === "estoque") {
+      window.setActiveSidebar?.("relatorios");
+      renderEstoque();
+    }
+    else if (view === "cupons") {
+      window.setActiveSidebar?.("relatorios");
+      renderCupons();
+    }
+    else if (view === "valorEstoque") {
+  window.setActiveSidebar?.("relatorios");
+  renderValorEstoque();
+}
+    else if (view === "resultado") {
+      window.setActiveSidebar?.("relatorios");
+      renderResultado();
+    }
+    else {
+      window.setActiveSidebar?.("relatorios");
+      renderPlaceholder("Escolha um relatório", "Clique em um card acima para abrir.");
+    }
   });
 });
 
+const initialView = window.CoreRouterState?.reportsInitialView || "";
+window.CoreRouterState.reportsInitialView = "";
 
-  renderPlaceholder("Escolha um relatório", "Clique em um card acima para abrir.");
+window.setActiveSidebar?.("relatorios");
+renderPlaceholder("Escolha um relatório", "Clique em um card acima para abrir.");
 };
