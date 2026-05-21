@@ -2194,6 +2194,14 @@ body.is-login #app{
   display:grid;
   place-items:center;
   flex:0 0 auto;
+  overflow:hidden;
+}
+
+.admin-user-row__avatar img{
+  width:100%;
+  height:100%;
+  display:block;
+  object-fit:cover;
 }
 
 .admin-user-row__meta{

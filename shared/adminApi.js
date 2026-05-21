@@ -80,10 +80,6 @@
     return callFn("admin-delete-user", { user_id });
   }
 
-  async function sendReset({ email }) {
-    return callFn("admin-send-reset", { email });
-  }
-
   async function sendFirstAccess({ user_id }) {
     return callFn("admin-send-first-access", { user_id });
   }
@@ -95,7 +91,6 @@
     updateUser,
     toggleUserStatus,
     deleteUser,
-    sendReset,
     sendFirstAccess
   };
 })();

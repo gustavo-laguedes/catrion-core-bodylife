@@ -478,7 +478,7 @@ function buildProfessionalCSVContent(list) {
   const lines = [];
 
   lines.push(["RELATÓRIO DE CONTAS A PAGAR"].map(q).join(sep));
-  lines.push(["Empresa", "Clube do Suplemento"].map(q).join(sep));
+  lines.push(["Empresa", "Body Life"].map(q).join(sep));
   lines.push(["Gerado em", new Date().toLocaleString("pt-BR")].map(q).join(sep));
   lines.push(["Período", getReportPeriodLabel()].map(q).join(sep));
   lines.push("");
@@ -809,7 +809,7 @@ function openProfessionalPDF(list) {
           <div>
             <div class="eyebrow">Relatório financeiro</div>
             <h1>Contas a Pagar</h1>
-            <div class="subtitle">Clube do Suplemento • Gerado em ${esc(generatedAt)}</div>
+            <div class="subtitle">Body Life • Gerado em ${esc(generatedAt)}</div>
           </div>
 
           ${getReportLogoHTML()}

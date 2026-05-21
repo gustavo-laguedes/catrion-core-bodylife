@@ -107,23 +107,9 @@ window.setActiveSidebar = setActiveSidebar;
 function navigateFromSidebar(route, reportView = "") {
   if (!route) return;
 
-  function navigateFromSidebar(route, reportView = "") {
-  if (!route) return;
-
   if ((route === "relatorios" || route === "contas") && !window.CoreAuth?.can?.("canViewReports")) {
     return;
   }
-
-  window.CoreRouterState = window.CoreRouterState || {};
-  window.CoreRouterState.reportsInitialView = "";
-
-  router.go(route);
-  setActiveSidebar(route);
-
-  if (isMobileViewport()) {
-    closeMobileMenu();
-  }
-}
 
   window.CoreRouterState = window.CoreRouterState || {};
   window.CoreRouterState.reportsInitialView = "";
@@ -1185,6 +1171,26 @@ function escapeAdminHtml(str) {
     .replaceAll("'", "&#039;");
 }
 
+function renderAdminUserAvatar(user, initials) {
+  let avatarUrl = "";
+
+  try {
+    avatarUrl = resolveAvatarUrl(user.avatar_path || user.avatarUrl || "");
+  } catch {
+    avatarUrl = "";
+  }
+
+  if (!avatarUrl) return escapeAdminHtml(initials);
+
+  return `
+    <img
+      src="${escapeAdminHtml(avatarUrl)}"
+      alt="${escapeAdminHtml(user.full_name || user.email || "Avatar")}"
+      onerror="this.parentElement.textContent='${escapeAdminHtml(initials)}';"
+    >
+  `;
+}
+
 function renderAdminUsersList(list) {
   if (!adminUsersList || !adminUsersEmpty) return;
 
@@ -1204,11 +1210,12 @@ function renderAdminUsersList(list) {
       .trim()
       .slice(0, 1)
       .toUpperCase();
+    const avatarHtml = renderAdminUserAvatar(user, initials);
 
     return `
       <div class="admin-user-row" data-user-id="${user.id}">
         <div class="admin-user-row__main">
-          <div class="admin-user-row__avatar">${initials}</div>
+          <div class="admin-user-row__avatar">${avatarHtml}</div>
 
           <div class="admin-user-row__meta">
             <div class="admin-user-row__name">${escapeAdminHtml(user.full_name || "Usuário sem nome")}</div>

@@ -433,11 +433,11 @@ if (cashNet || cashGiven){
 
     <div class="hr"></div>
 
-    <div class="center small"><b>Clube do Suplemento</b></div>
+    <div class="center small"><b>Body Life Suplementos</b></div>
     <div class="center tiny">Bruno Moretti - ME</div>
-    <div class="center tiny">CNPJ: 24.001.906/0001-99</div>
-    <div class="center tiny">Rua Euclides de Figueiredo, 36</div>
-    <div class="center tiny">Alto do Cardoso • Pindamonhangaba-SP</div>
+    <div class="center tiny">CNPJ: 17.182.850/0001-50</div>
+    <div class="center tiny">Avenida Monsenhor Antonio do Nascimento Castro, 281</div>
+    <div class="center tiny">Cavarucanguera • Taubate - SP</div>
 
     <div class="hr"></div>
 
@@ -530,7 +530,7 @@ ${freightReason ? `<div class="row"><span class="muted">Obs. frete</span><span c
     <div class="hr"></div>
 
     <div class="center small">Obrigado pela preferência!</div>
-    <div class="center small">#VemProClube</div>
+    <div class="center small">#VemPraBodyLife</div>
 
     <!-- ✅ logo por último -->
     <div class="logo-wrap">
