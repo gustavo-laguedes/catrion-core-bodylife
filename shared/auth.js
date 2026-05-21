@@ -105,8 +105,8 @@
       firstAccessCompleted: !!profile?.first_access_completed,
       isProtected: !!profile?.is_protected,
       tenantId,
-      tenantSlug: fixedTenant.tenantSlug || "clubedosuplemento",
-      tenantName: fixedTenant.tenantName || "Clube do Suplemento",
+      tenantSlug: fixedTenant.tenantSlug || "bodylife",
+      tenantName: fixedTenant.tenantName || "Body Life",
       permissions: [],
       ts: Date.now(),
       source: "core_internal_auth"

@@ -134,7 +134,7 @@
           <div class="center title">CUPOM</div>
           <div class="hr"></div>
 
-          <div class="center small"><b>Clube do Suplemento</b></div>
+          <div class="center small"><b>Body Life</b></div>
           <div class="center tiny">Bruno Moretti - ME</div>
           <div class="center tiny">CNPJ: 24.001.906/0001-99</div>
           <div class="center tiny">Rua Euclides de Figueiredo, 36</div>
@@ -178,7 +178,7 @@
           <div class="hr"></div>
 
           <div class="center small">Obrigado pela preferência!</div>
-          <div class="center small">#VemProClube</div>
+          <div class="center small">#BodyLife</div>
 
           <div class="logo-wrap">
             <img class="logo" src="${logoUrl}" alt="Logo">

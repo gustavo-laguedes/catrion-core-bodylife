@@ -7,13 +7,13 @@
   // CONFIG FIXA DO CLIENTE
   // =========================================================
   // IMPORTANTE:
-  // 1) preencha o tenantId real do Clube do Suplemento
+  // 1) preencha o tenantId real da Body Life
   // 2) se ainda não souber agora, pode deixar temporariamente
   //    e depois ajustar quando formos validar no banco
   const FIXED_TENANT = {
     tenantId: "11111111-1111-1111-1111-111111111111",
-    tenantSlug: "clubedosuplemento",
-    tenantName: "Clube do Suplemento"
+    tenantSlug: "bodylife",
+    tenantName: "Body Life"
   };
 
   function getActiveTenantId() {
@@ -63,7 +63,7 @@
     }
 
     if (!FIXED_TENANT.tenantId) {
-      throw new Error("Tenant fixo do Clube do Suplemento ainda não foi configurado em shared/tenant.js.");
+      throw new Error("Tenant fixo da Body Life ainda não foi configurado em shared/tenant.js.");
     }
 
     setActiveTenantId(FIXED_TENANT.tenantId);
