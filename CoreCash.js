@@ -1,449 +1,80 @@
 /* CoreCash.js
-   Caixa (localStorage) - sessão + eventos + resumo (inclui lucro preparado)
+   Caixa: Supabase e a unica fonte de verdade para sessoes e eventos.
 */
 (function (global) {
- function getCashTenantKey(base) {
-  const tenantId =
-    window.CatrionTenant?.getActiveTenantId?.() ||
-    localStorage.getItem("catrion_active_tenant") ||
-    "default";
+  const LEGACY_CASH_PREFIXES = [
+    "core.cash.session.v1",
+    "core.cash.events.v1"
+  ];
 
-  return `${base}.${tenantId}`;
-}
+  let sessionCache = null;
+  let eventsCache = [];
+  const cancelledEventOverlays = new Map();
 
-function getSessionKey() {
-  return getCashTenantKey("core.cash.session.v1");
-}
-
-function getEventsKey() {
-  return getCashTenantKey("core.cash.events.v1");
-}
-  const MAX_EVENTS = 20000; // histórico grande pro modo local-dev (ajuste se quiser)
-
-  // =========================
-// Sync Supabase (fire-and-forget)
-// =========================
-async function syncEnsureRemoteSession(session) {
-  if (!window.CashStore?.openSession) return null;
-  if (!session?.isOpen) return null;
-
-  // já temos id remoto salvo
-  if (session.remoteSessionId) return session.remoteSessionId;
-
-  try {
-    // 1) primeiro tenta reaproveitar uma sessão aberta já existente no Supabase
-    if (window.CashStore?.getLatestOpenSession) {
-      const existing = await window.CashStore.getLatestOpenSession();
-
-      if (existing?.id) {
-        session.remoteSessionId = existing.id;
-        saveSession(session);
-        return session.remoteSessionId;
-      }
-    }
-
-    // 2) se não existir nenhuma aberta, cria uma nova
-    const row = await window.CashStore.openSession({
-      openedBy: session.openedBy || "system",
-      openingCashCents: Math.round(Number(session.initialAmount || 0) * 100),
-      note: session.notes || ""
-    });
-
-    session.remoteSessionId = row?.id || null;
-    saveSession(session);
-
-    // 3) grava o evento OPEN no banco logo após criar a sessão
-    if (session.remoteSessionId) {
-      const openNoteObj = {
-        by: session.openedBy || "system",
-        saleId: null,
-        notes: session.notes || "",
-        meta: { notes: session.notes || "" },
-        amount: session.initialAmount || 0
-      };
-
-      await window.CashStore.addEvent({
-        sessionId: session.remoteSessionId,
-        kind: "OPEN",
-        amountCents: Math.round(Number(session.initialAmount || 0) * 100),
-        note: JSON.stringify(openNoteObj)
-      });
-    }
-
-    return session.remoteSessionId;
-  } catch (e) {
-    // 4) se bater conflito de sessão aberta duplicada, tenta buscar a já existente
-    const msg = String(e?.message || "");
-    const code = String(e?.code || "");
-
-    const isDuplicateOpenSession =
-      code === "23505" ||
-      msg.includes("unique_open_cash_per_tenant");
-
-    if (isDuplicateOpenSession && window.CashStore?.getLatestOpenSession) {
-      try {
-        const existing = await window.CashStore.getLatestOpenSession();
-
-        if (existing?.id) {
-          session.remoteSessionId = existing.id;
-          saveSession(session);
-          return session.remoteSessionId;
+  function clearLegacyCashStorage() {
+    try {
+      const keys = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (key && LEGACY_CASH_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+          keys.push(key);
         }
-      } catch (lookupErr) {
-        console.warn("[CoreCash] Falha ao reaproveitar sessão aberta no Supabase:", lookupErr);
       }
+      keys.forEach((key) => localStorage.removeItem(key));
+    } catch (error) {
+      console.warn("[CoreCash] Falha ao remover cache legado do caixa:", error);
     }
-
-    console.warn("[CoreCash] Falha ao abrir sessão no Supabase (mantendo local):", e);
-    return null;
   }
-}
 
-async function syncEventToSupabase(evt) {
-  try {
-    if (!window.CashStore) return;
-
-    const session = loadSession();
-    if (!session) return;
-
-    // garante sessão remota se estiver aberto
-    const remoteId =
-      session.remoteSessionId ||
-      (session.isOpen ? await syncEnsureRemoteSession(session) : null);
-
-    // se caixa já fechou e nunca teve remoteId, não tem como linkar (deixa local)
-    if (!remoteId) return;
-
-    const amountCents = Math.round(Number(evt?.amount ?? evt?.total ?? 0) * 100);
-
-    // vamos salvar "by", "notes", "saleId" e "meta" dentro de note (texto)
-    const noteObj = {
-  by: evt?.by ?? null,
-  saleId: evt?.saleId ?? null,
-  notes: evt?.meta?.notes ?? "",
-  meta: evt?.meta ?? null,
-
-  // dados completos para reconstruir venda remota
-  total: evt?.total ?? null,
-  payments: evt?.payments ?? null,
-  costTotal: evt?.costTotal ?? null,
-  profit: evt?.profit ?? null,
-  amount: evt?.amount ?? null
-};
-
-    await window.CashStore.addEvent({
-      sessionId: remoteId,
-      kind: String(evt?.type || ""),     // <-- AQUI é o principal: usa evt.type
-      amountCents,
-      note: JSON.stringify(noteObj)
-    });
-  } catch (e) {
-    console.warn("[CoreCash] Falha ao inserir evento no Supabase (mantendo local):", e);
-  }
-}
-
-async function syncCloseToSupabase(session) {
-  try {
-    if (!window.CashStore) return true;
-    if (!session?.remoteSessionId) return true;
-
-    await window.CashStore.closeSession({
-      sessionId: session.remoteSessionId,
-      closedBy: session.closedBy || "system",
-      closingCashCountedCents: Math.round(Number(session.finalAmount || 0) * 100),
-      note: session.notes || ""
-    });
-
-    const closeNoteObj = {
-      by: session.closedBy || "system",
-      saleId: null,
-      notes: session.notes || "",
-      meta: { notes: session.notes || "" },
-      total: null,
-      payments: null,
-      costTotal: null,
-      profit: null,
-      amount: Number(session.finalAmount || 0)
-    };
-
-    await window.CashStore.addEvent({
-      sessionId: session.remoteSessionId,
-      kind: "CLOSE",
-      amountCents: Math.round(Number(session.finalAmount || 0) * 100),
-      note: JSON.stringify(closeNoteObj)
-    });
-
-    return true;
-  } catch (e) {
-    console.error("[CoreCash] ERRO AO FECHAR SESSÃO NO SUPABASE:", e);
-    throw e;
-  }
-}
-
-// === Integração simples com Estoque (localStorage) ===
-const KEY_PRODUCTS = "core.products.v1";
-const KEY_MOVES    = "core.stock.movements.v1";
-
-function safeArr(raw) {
-  try {
-    const v = JSON.parse(raw || "[]");
-    return Array.isArray(v) ? v : [];
-  } catch { return []; }
-}
-
-function loadProductsLS() {
-  return safeArr(localStorage.getItem(KEY_PRODUCTS));
-}
-
-function saveProductsLS(list) {
-  try { localStorage.setItem(KEY_PRODUCTS, JSON.stringify(list || [])); } catch {}
-}
-
-function getActorNameLS(fallback) {
-  // tenta pegar do CoreAuth ou do "Olá, Fulano"
-  try {
-    const a = window.CoreAuth;
-    if (a?.getCurrentUser) {
-      const u = a.getCurrentUser();
-      if (u?.name) return u.name;
-      if (u?.displayName) return u.displayName;
+  function assertCashStore() {
+    if (!window.CashStore) {
+      throw new Error("CashStore nao carregou. O caixa depende do Supabase.");
     }
-    const hello = document.getElementById("userHello")?.textContent || "";
-    const cleaned = String(hello).trim()
-      .replace(/^Olá[,!]?\s*/i, "")
-      .replace(/\s*\(.*?\)\s*/g, "")
-      .trim();
-    return cleaned || fallback || "operador";
-  } catch {
-    return fallback || "operador";
   }
-}
-
-function appendMoveLS(move) {
-  const arr = safeArr(localStorage.getItem(KEY_MOVES));
-  arr.push({
-    ...move,
-    createdBy: move.createdBy || getActorNameLS(move.createdBy),
-  });
-  try { localStorage.setItem(KEY_MOVES, JSON.stringify(arr)); } catch {}
-}
-
-// devolve estoque da venda removida (se tiver meta.items)
-function restoreStockFromSaleEvent(removedEvt) {
-  const items = removedEvt?.meta?.items;
-  if (!Array.isArray(items) || items.length === 0) return { restored: 0, skipped: 0 };
-
-  const products = loadProductsLS();
-  if (!products.length) return { restored: 0, skipped: items.length };
-
-  // índice por ID e por SKU (fallback)
-const byId = new Map(
-  products.map(p => [String(p.id || "").trim(), p]).filter(([k]) => !!k)
-);
-
-const bySku = new Map(
-  products.map(p => [String(p.sku || "").trim(), p]).filter(([k]) => !!k)
-);
-
-
-  let restored = 0;
-  let skipped = 0;
-
-  const actor = getActorNameLS(removedEvt?.by || "operador");
-  const ref = removedEvt?.saleId || removedEvt?.id || "sale";
-
-  for (const it of items) {
-    const qty = Number(it?.qty || 0);
-    if (!qty || qty <= 0) { skipped++; continue; }
-
-    // ✅ primeiro tenta por productId (mais confiável)
-const pid = String(it?.productId || "").trim();
-let prod = pid ? byId.get(pid) : null;
-
-// fallback: tenta por SKU/barcode/code
-if (!prod) {
-  const sku = String(it?.sku || it?.barcode || it?.code || "").trim();
-  if (sku) prod = bySku.get(sku);
-}
-
-if (!prod) { skipped++; continue; }
-
-
-    prod.stockOnHand = Number(prod.stockOnHand || 0) + qty;
-    restored++;
-
-    appendMoveLS({
-      id: `mov_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      productId: prod.id,
-      type: "IN",
-      qty,
-      reason: "sale_cancel",
-      ref,
-      note: `Estorno de venda removida (${ref})`,
-      createdAt: new Date().toISOString(),
-      createdBy: actor
-    });
-  }
-
-  saveProductsLS(products);
-  return { restored, skipped };
-}
-
 
   function nowISO() {
     return new Date().toISOString();
   }
 
-  function isSameDayBR(isoA, isoB) {
-  if (!isoA || !isoB) return false;
+  function round2(value) {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
 
-  const a = new Date(isoA);
-  const b = new Date(isoB);
+  function normalizeMoney(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? round2(number) : 0;
+  }
 
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
-
-function isTodayISO(iso) {
-  return isSameDayBR(iso, new Date().toISOString());
-}
+  function normalizePayments(payments) {
+    const value = payments || {};
+    return {
+      cash: normalizeMoney(value.cash || 0),
+      pix: normalizeMoney(value.pix || 0),
+      cardCredit: normalizeMoney(value.cardCredit || 0),
+      cardDebit: normalizeMoney(value.cardDebit || 0)
+    };
+  }
 
   function dayKeyFromISO(iso) {
-  const d = new Date(iso);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const da = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${da}`;
-}
-
-function canCancelEvent(evt) {
-  if (!evt || evt.cancelledAt) return false;
-
-  if (isTodayISO(evt.at)) return true;
-
-  return evt.type === "SALE";
-}
-
-
-  function uid(prefix = "evt") {
-    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const date = new Date(iso);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
-  function safeParse(json, fallback) {
-    try { return JSON.parse(json); } catch { return fallback; }
+  function isSameDayBR(isoA, isoB) {
+    if (!isoA || !isoB) return false;
+    return dayKeyFromISO(isoA) === dayKeyFromISO(isoB);
   }
 
-  function loadSession() {
-  const raw = localStorage.getItem(getSessionKey());
-  return raw ? safeParse(raw, null) : null;
-}
-
-  function saveSession(session) {
-  if (!session) {
-    localStorage.removeItem(getSessionKey());
-    return;
+  function canCancelEvent(event) {
+    if (!event || event.cancelledAt) return false;
+    return isSameDayBR(event.at, nowISO()) || event.type === "SALE";
   }
 
-  try {
-    localStorage.setItem(getSessionKey(), JSON.stringify(session));
-  } catch (e) {
-    // se falhar, pelo menos não trava o sistema
-  }
-}
-
-function loadEvents() {
-  const raw = localStorage.getItem(getEventsKey());
-  const arr = raw ? safeParse(raw, []) : [];
-  return Array.isArray(arr) ? arr : [];
-}
-
-function eventTimeToSecond(iso) {
-  const d = new Date(iso || 0);
-  d.setMilliseconds(0);
-  return d.toISOString();
-}
-
-function eventFingerprint(evt) {
-  return [
-    String(evt?.type || ""),
-    eventTimeToSecond(evt?.at),
-    Number(evt?.amount ?? evt?.total ?? 0).toFixed(2),
-    String(evt?.saleId || ""),
-    String(evt?.by || "")
-  ].join("|");
-}
-
-function mergeEventsLists(localEvents = [], remoteEvents = []) {
-  const map = new Map();
-
-  function buildKey(evt) {
-    const type = String(evt?.type || "").toUpperCase();
-    const by = String(evt?.by || "");
-    const amount = Number(evt?.amount ?? evt?.total ?? 0).toFixed(2);
-
-    // venda: dedup por saleId
-    if (type === "SALE") {
-      return `sale:${evt?.saleId || evt?.id || eventFingerprint(evt)}`;
-    }
-
-    // abertura/fechamento/suprimento/sangria:
-    // dedup por tipo + operador + valor + minuto
-    if (["OPEN", "CLOSE", "SUPPLY", "WITHDRAW"].includes(type)) {
-      const d = new Date(evt?.at || 0);
-      const minuteKey = [
-        d.getFullYear(),
-        String(d.getMonth() + 1).padStart(2, "0"),
-        String(d.getDate()).padStart(2, "0"),
-        String(d.getHours()).padStart(2, "0"),
-        String(d.getMinutes()).padStart(2, "0")
-      ].join("");
-      return `${type}:${by}:${amount}:${minuteKey}`;
-    }
-
-    return `sig:${eventFingerprint(evt)}`;
-  }
-
-  // 1) entra remoto primeiro
-  (remoteEvents || []).forEach((evt) => {
-    const key = buildKey(evt);
-    map.set(key, { ...evt });
-  });
-
-  // 2) local entra por cima do remoto, preservando cancelamento e flags locais
-  (localEvents || []).forEach((evt) => {
-    const key = buildKey(evt);
-    const prev = map.get(key) || {};
-
-    map.set(key, {
-      ...prev,
-      ...evt,
-
-      // preserva sempre o estado local de cancelamento
-      cancelledAt: evt?.cancelledAt || prev?.cancelledAt || null,
-      cancelledBy: evt?.cancelledBy || prev?.cancelledBy || null,
-      cancelReason: evt?.cancelReason || prev?.cancelReason || null
-    });
-  });
-
-  return Array.from(map.values()).sort((a, b) => {
-    return new Date(b.at).getTime() - new Date(a.at).getTime();
-  });
-}
-
-async function loadRemoteSession() {
-  try {
-    const getSessionFn =
-      window.CashStore?.getLatestSession ||
-      window.CashStore?.getLatestOpenSession;
-
-    if (!getSessionFn) return null;
-
-    const row = await getSessionFn();
+  function mapRemoteSession(row) {
     if (!row) return null;
-
     return {
       isOpen: row.status === "open",
       openedAt: row.opened_at,
@@ -458,189 +89,78 @@ async function loadRemoteSession() {
           : null,
       remoteSessionId: row.id
     };
-  } catch (e) {
-    console.warn("[CoreCash] Falha ao carregar sessão remota:", e);
-    return null;
-  }
-}
-
-async function loadRemoteEventsByDay(dayKey) {
-  try {
-    if (!window.CashStore?.listEventsByPeriod) return [];
-
-    const start = `${dayKey}T00:00:00.000Z`;
-    const end = `${dayKey}T23:59:59.999Z`;
-
-    const rows = await window.CashStore.listEventsByPeriod({
-      dateFrom: start,
-      dateTo: end,
-      limit: 1000
-    });
-
-    return (rows || []).map(mapRemoteEvent);
-  } catch (e) {
-    console.warn("[CoreCash] erro ao buscar eventos por dia:", e);
-    return [];
-  }
-}
-
-function mapRemoteEvent(row) {
-  let noteObj = {};
-  try {
-    noteObj = row?.note ? JSON.parse(row.note) : {};
-  } catch {
-    noteObj = {};
   }
 
-  const rawNote = String(row?.note || "").trim();
-const isLegacySaleWithoutJson =
-  String(row?.kind || "").toUpperCase() === "SALE" &&
-  rawNote &&
-  rawNote[0] !== "{";
+  function mapRemoteEvent(row) {
+    let noteObj = {};
+    try {
+      noteObj = row?.note ? JSON.parse(row.note) : {};
+    } catch {
+      noteObj = {};
+    }
 
-if (isLegacySaleWithoutJson) {
-  return {
-    id: row.id,
-    type: "SALE",
-    at: row.created_at,
-    by: "system",
-    saleId: null,
-    meta: {},
-    note: row.note || null,
-    total: Number(row.amount_cents || 0) / 100,
-    payments: null,
-    costTotal: 0,
-    profit: 0,
-    amount: Number(row.amount_cents || 0) / 100,
-    isLegacyGhost: true
-  };
-}
+    const type = String(row?.kind || "").toUpperCase();
+    const rawNote = String(row?.note || "").trim();
+    const isLegacyGhost = type === "SALE" && rawNote && rawNote[0] !== "{";
 
-  const typeMap = {
-    OPEN: "OPEN",
-    CLOSE: "CLOSE",
-    SUPPLY: "SUPPLY",
-    WITHDRAW: "WITHDRAW",
-    SALE: "SALE"
-  };
-
-  return {
-  id: row.id,
-  type: typeMap[String(row.kind || "").toUpperCase()] || String(row.kind || "").toUpperCase(),
-  at: row.created_at,
-  by: noteObj?.by || "system",
-
-  // mantém amount genérico
-  amount: noteObj?.amount != null
-    ? Number(noteObj.amount || 0)
-    : Number(row.amount_cents || 0) / 100,
-
-  saleId: noteObj?.saleId || null,
-  meta: noteObj?.meta || {},
-  note: row.note || null,
-
-  // reconstrução completa da venda remota
-  total: noteObj?.total != null ? Number(noteObj.total || 0) : null,
-  payments: noteObj?.payments || null,
-  costTotal: noteObj?.costTotal != null ? Number(noteObj.costTotal || 0) : 0,
-  profit: noteObj?.profit != null ? Number(noteObj.profit || 0) : 0
-};
-}
-
-async function loadRemoteEvents(sessionId) {
-  try {
-    if (!window.CashStore?.listEvents || !sessionId) return [];
-    const rows = await window.CashStore.listEvents({ sessionId, limit: 500 });
-    return (rows || []).map(mapRemoteEvent);
-  } catch (e) {
-    console.warn("[CoreCash] Falha ao carregar eventos remotos:", e);
-    return [];
-  }
-}
-
-
-  function saveEvents(events) {
-  let list = Array.isArray(events) ? events : [];
-
-  // limite duro (mantém mais recentes: você usa unshift)
-  if (list.length > MAX_EVENTS) {
-    list = list.slice(0, MAX_EVENTS);
-  }
-
-  // fusível: tenta salvar, se estourar quota corta e tenta de novo
-  const trySave = (arr) => {
-  localStorage.setItem(getEventsKey(), JSON.stringify(arr));
-  return true;
-};
-
-  // tentativa 1: salva tudo (já limitado)
-  try {
-    trySave(list);
-    return;
-  } catch (e) {}
-
-  // tentativa 2: corta pela metade
-  try {
-    list = list.slice(0, Math.max(1000, Math.floor(list.length / 2)));
-    trySave(list);
-    return;
-  } catch (e) {}
-
-  // tentativa 3: salva só os últimos 2000
-  try {
-    list = list.slice(0, Math.min(list.length, 2000));
-    trySave(list);
-    return;
-  } catch (e) {}
-
-  // tentativa 4: salva só os últimos 300
-  try {
-    list = list.slice(0, Math.min(list.length, 300));
-    trySave(list);
-    return;
-  } catch (e) {}
-
-  // tentativa 5: desiste sem travar o sistema (não lança erro)
-}
-
-
-  function addEvent(evt) {
-    const events = loadEvents();
-    events.unshift(evt); // mais recente primeiro
-    saveEvents(events);
-    return evt;
-  }
-
-  function ensureOpenSession() {
-    const s = loadSession();
-    return s && s.isOpen;
-  }
-
-  function round2(n) {
-    return Math.round((n + Number.EPSILON) * 100) / 100;
-  }
-
-  function normalizeMoney(v) {
-    const n = Number(v);
-    if (!isFinite(n)) return 0;
-    return round2(n);
-  }
-
-  function normalizePayments(payments) {
-    const p = payments || {};
     return {
-      cash:       normalizeMoney(p.cash || 0),
-      pix:        normalizeMoney(p.pix || 0),
-      cardCredit: normalizeMoney(p.cardCredit || 0),
-      cardDebit:  normalizeMoney(p.cardDebit || 0),
+      id: row.id,
+      type,
+      at: row.created_at,
+      by: noteObj?.by || "system",
+      amount:
+        noteObj?.amount != null
+          ? Number(noteObj.amount || 0)
+          : Number(row.amount_cents || 0) / 100,
+      saleId: noteObj?.saleId || null,
+      meta: noteObj?.meta || {},
+      note: row.note || null,
+      total: noteObj?.total != null ? Number(noteObj.total || 0) : null,
+      payments: noteObj?.payments || null,
+      costTotal: noteObj?.costTotal != null ? Number(noteObj.costTotal || 0) : 0,
+      profit: noteObj?.profit != null ? Number(noteObj.profit || 0) : 0,
+      isLegacyGhost,
+      ...(cancelledEventOverlays.get(String(row.id)) || {})
     };
   }
 
-  
+  function eventNote(event) {
+    return JSON.stringify({
+      by: event?.by ?? null,
+      saleId: event?.saleId ?? null,
+      notes: event?.meta?.notes ?? "",
+      meta: event?.meta ?? null,
+      total: event?.total ?? null,
+      payments: event?.payments ?? null,
+      costTotal: event?.costTotal ?? null,
+      profit: event?.profit ?? null,
+      amount: event?.amount ?? null
+    });
+  }
 
+  async function addRemoteEvent(sessionId, event) {
+    assertCashStore();
+    if (!sessionId) throw new Error("Nao existe sessao de caixa aberta no Supabase.");
+
+    const row = await window.CashStore.addEvent({
+      sessionId,
+      kind: String(event?.type || ""),
+      amountCents: Math.round(Number(event?.amount ?? event?.total ?? 0) * 100),
+      note: eventNote(event)
+    });
+
+    const mapped = mapRemoteEvent(row);
+    eventsCache = [mapped, ...eventsCache.filter((item) => item.id !== mapped.id)];
+    return mapped;
+  }
+
+  async function getRemoteOpenSession() {
+    assertCashStore();
+    return mapRemoteSession(await window.CashStore.getLatestOpenSession());
+  }
 
   function buildSummary(events) {
-    const out = {
+    const summary = {
       salesCount: 0,
       salesTotal: 0,
       byPayment: { cash: 0, pix: 0, cardCredit: 0, cardDebit: 0 },
@@ -648,391 +168,244 @@ async function loadRemoteEvents(sessionId) {
       withdrawsCash: 0,
       costTotal: 0,
       profitTotal: 0,
-      profitPct: 0,
+      profitPct: 0
     };
 
-    (events || []).forEach(e => {
-      if (e.cancelledAt) return;
-      if (e.type === "SALE") {
-        out.salesCount += 1;
-
-        const pay = normalizePayments(e.payments);
-        out.byPayment.cash       = round2(out.byPayment.cash + pay.cash);
-        out.byPayment.pix        = round2(out.byPayment.pix + pay.pix);
-        out.byPayment.cardCredit = round2(out.byPayment.cardCredit + pay.cardCredit);
-        out.byPayment.cardDebit  = round2(out.byPayment.cardDebit + pay.cardDebit);
-
+    (events || []).forEach((event) => {
+      if (event.cancelledAt) return;
+      if (event.type === "SALE") {
+        summary.salesCount += 1;
+        const payments = normalizePayments(event.payments);
+        summary.byPayment.cash = round2(summary.byPayment.cash + payments.cash);
+        summary.byPayment.pix = round2(summary.byPayment.pix + payments.pix);
+        summary.byPayment.cardCredit = round2(summary.byPayment.cardCredit + payments.cardCredit);
+        summary.byPayment.cardDebit = round2(summary.byPayment.cardDebit + payments.cardDebit);
         const total = normalizeMoney(
-          e.total != null ? e.total : (pay.cash + pay.pix + pay.cardCredit + pay.cardDebit)
+          event.total != null
+            ? event.total
+            : payments.cash + payments.pix + payments.cardCredit + payments.cardDebit
         );
-        out.salesTotal = round2(out.salesTotal + total);
-
-        const cost = normalizeMoney(e.costTotal || 0);
-        out.costTotal = round2(out.costTotal + cost);
-
-        const profit = normalizeMoney(e.profit != null ? e.profit : (total - cost));
-        out.profitTotal = round2(out.profitTotal + profit);
+        const cost = normalizeMoney(event.costTotal || 0);
+        summary.salesTotal = round2(summary.salesTotal + total);
+        summary.costTotal = round2(summary.costTotal + cost);
+        summary.profitTotal = round2(
+          summary.profitTotal + normalizeMoney(event.profit != null ? event.profit : total - cost)
+        );
       }
-
-      if (e.type === "SUPPLY") out.suppliesCash = round2(out.suppliesCash + normalizeMoney(e.amount));
-      if (e.type === "WITHDRAW") out.withdrawsCash = round2(out.withdrawsCash + normalizeMoney(e.amount));
+      if (event.type === "SUPPLY") {
+        summary.suppliesCash = round2(summary.suppliesCash + normalizeMoney(event.amount));
+      }
+      if (event.type === "WITHDRAW") {
+        summary.withdrawsCash = round2(summary.withdrawsCash + normalizeMoney(event.amount));
+      }
     });
 
-    out.profitPct = out.salesTotal > 0 ? round2((out.profitTotal / out.salesTotal) * 100) : 0;
-    return out;
+    summary.profitPct =
+      summary.salesTotal > 0
+        ? round2((summary.profitTotal / summary.salesTotal) * 100)
+        : 0;
+    return summary;
   }
 
-  function getSessionEvents(){
-  const events = loadEvents();
-  const s = loadSession();
-
-  // ✅ caixa fechado = resumo zerado
-  if (!s?.openedAt || !s.isOpen) return [];
-
-  const start = new Date(s.openedAt).getTime();
-  return events.filter(e => new Date(e.at).getTime() >= start);
-}
-
-function getTodayEvents() {
-  const events = loadEvents();
-  const today = new Date();
-
-  return events.filter(e => isSameDayBR(e.at, today));
-}
-
-
-  
-
-  function rebuildSessionFromEvents(events){
-  const list = Array.isArray(events) ? [...events] : [];
-  const activeEvents = list.filter(e => !e.cancelledAt);
-
-  // se não tem nenhum OPEN ativo, não existe sessão
-  const opens = activeEvents.filter(e => e.type === "OPEN");
-  if (!opens.length) {
-    saveSession(null);
-    return null;
-  }
-
-  const mostRecent = (arr) =>
-    arr.reduce((best, cur) => {
-      const tb = best ? new Date(best.at).getTime() : -Infinity;
-      const tc = cur ? new Date(cur.at).getTime() : -Infinity;
-      return tc > tb ? cur : best;
-    }, null);
-
-  const lastOpen = mostRecent(opens);
-
-  const openAt = new Date(lastOpen.at).getTime();
-  const closesAfterOpen = activeEvents.filter(
-    e => e.type === "CLOSE" && new Date(e.at).getTime() >= openAt
-  );
-  const lastClose = closesAfterOpen.length ? mostRecent(closesAfterOpen) : null;
-
-  const isOpen = !lastClose;
-
-  const session = {
-    isOpen,
-    openedAt: lastOpen.at,
-    openedBy: lastOpen.by || "—",
-    initialAmount: Number(lastOpen.amount || 0),
-    notes: lastOpen.meta?.notes || "",
-    closedAt: isOpen ? null : lastClose.at,
-    closedBy: isOpen ? null : (lastClose.by || "—"),
-    finalAmount: isOpen ? null : Number(lastClose.amount || 0),
-  };
-
-  saveSession(session);
-  return session;
-}
-
+  clearLegacyCashStorage();
 
   const CoreCash = {
-  keys: {
-    getSessionKey,
-    getEventsKey
-  },
+    clearLegacyCashStorage,
 
-  async ensureRemoteSession() {
-    const session = loadSession();
-    if (!session?.isOpen) return null;
-    return await syncEnsureRemoteSession(session);
-  },
+    async ensureRemoteSession() {
+      const session = await getRemoteOpenSession();
+      sessionCache = session;
+      return session?.remoteSessionId || null;
+    },
 
-   async getSession() {
-  const local = loadSession();
+    async getSession() {
+      assertCashStore();
+      sessionCache = mapRemoteSession(await window.CashStore.getLatestSession());
+      return sessionCache;
+    },
 
-  // se local está aberto, NÃO deixa uma sessão remota fechada sobrescrever
-  if (local?.isOpen) {
-    try {
-      const remoteOpen = window.CashStore?.getLatestOpenSession
-        ? await window.CashStore.getLatestOpenSession()
-        : null;
+    async isOpen() {
+      const session = await getRemoteOpenSession();
+      sessionCache = session;
+      return !!session;
+    },
 
-      if (remoteOpen?.id) {
-        const merged = {
-          ...local,
-          isOpen: true,
-          openedAt: remoteOpen.opened_at,
-          openedBy: remoteOpen.opened_by || local.openedBy || "system",
-          initialAmount: Number(remoteOpen.opening_cash_cents || 0) / 100,
-          notes: remoteOpen.note || local.notes || "",
-          remoteSessionId: remoteOpen.id
-        };
-
-        saveSession(merged);
-        return merged;
+    async getEvents() {
+      const session = await this.getSession();
+      if (!session?.remoteSessionId) {
+        eventsCache = [];
+        return [];
       }
 
-      // ainda não criou remoto? mantém local aberto
-      return local;
-    } catch (e) {
-      console.warn("[CoreCash] Falha ao consultar sessão aberta remota:", e);
-      return local;
-    }
-  }
-
-  // se local não está aberto, aí sim pode usar a última sessão remota
-  const remote = await loadRemoteSession();
-  if (remote) {
-    saveSession(remote);
-    return remote;
-  }
-
-  return local;
-},
-
-  async isOpen() {
-    const s = await this.getSession();
-    return !!(s && s.isOpen);
-  },
-
-  async getEvents() {
-  const localEvents = loadEvents();
-  const session = await this.getSession();
-
-  if (session?.remoteSessionId) {
-    const remoteEvents = await loadRemoteEvents(session.remoteSessionId);
-
-    if (remoteEvents.length) {
-      const merged = mergeEventsLists(localEvents, remoteEvents);
-      saveEvents(merged);
-      return merged;
-    }
-  }
-
-  return localEvents;
-},
-
-  async getEventsByDay(dayKey) {
-  const localEvents = loadEvents().filter(e => {
-    return e.at && dayKeyFromISO(e.at) === dayKey;
-  });
-
-  const remoteEvents = await loadRemoteEventsByDay(dayKey);
-
-  if (remoteEvents.length) {
-    return mergeEventsLists(localEvents, remoteEvents);
-  }
-
-  return localEvents;
-},
-
-    canCancelEvent(event){
-  return canCancelEvent(event);
-},
-
-    cancelEvent(eventId, { by = "system", reason = "Cancelado manualmente" } = {}){
-  const events = loadEvents();
-  const idx = events.findIndex(e => String(e.id) === String(eventId));
-  if (idx < 0) return { ok:false, reason:"Evento não encontrado." };
-
-  const evt = events[idx];
-
-  if (!canCancelEvent(evt)) {
-    return { ok:false, reason:"Este movimento não pode mais ser cancelado." };
-  }
-
-  if (evt.cancelledAt) {
-    return { ok:false, reason:"Este movimento já está cancelado." };
-  }
-
-  evt.cancelledAt = nowISO();
-  evt.cancelledBy = by;
-  evt.cancelReason = reason || "Cancelado manualmente";
-
-  let stockRestore = null;
-  if (evt?.type === "SALE") {
-    stockRestore = restoreStockFromSaleEvent(evt);
-  }
-
-  saveEvents(events);
-  rebuildSessionFromEvents(events);
-
-  return { ok:true, event: evt, stockRestore };
-},
-
-
-
-
-    open({ initialAmount = 0, by = "system", notes = "" } = {}) {
-      const current = loadSession();
-      if (current && current.isOpen) {
-        return { ok: false, reason: "Caixa já está aberto.", session: current };
-      }
-
-      const session = {
-        isOpen: true,
-        openedAt: nowISO(),
-        openedBy: by,
-        initialAmount: normalizeMoney(initialAmount),
-        notes: notes || "",
-        closedAt: null,
-        closedBy: null,
-        finalAmount: null,
-      };
-
-      saveSession(session);
-
-      addEvent({
-        id: uid("evt"),
-        type: "OPEN",
-        at: session.openedAt,
-        by,
-        amount: session.initialAmount,
-        meta: { notes: session.notes || "" }
+      const rows = await window.CashStore.listEvents({
+        sessionId: session.remoteSessionId,
+        limit: 500
       });
+      eventsCache = (rows || []).map(mapRemoteEvent);
+      return eventsCache;
+    },
 
-      // fire-and-forget: cria sessão no supabase e registra OPEN
-syncEnsureRemoteSession(session);
+    async getEventsByDay(dayKey) {
+      assertCashStore();
+      const rows = await window.CashStore.listEventsByPeriod({
+        dateFrom: `${dayKey}T00:00:00.000Z`,
+        dateTo: `${dayKey}T23:59:59.999Z`,
+        limit: 1000
+      });
+      return (rows || []).map(mapRemoteEvent);
+    },
 
-      return { ok: true, session };
+    canCancelEvent,
+
+    cancelEvent(eventId, { by = "system", reason = "Cancelado manualmente" } = {}) {
+      const index = eventsCache.findIndex((event) => String(event.id) === String(eventId));
+      if (index < 0) return { ok: false, reason: "Evento nao encontrado." };
+
+      const event = eventsCache[index];
+      if (!canCancelEvent(event)) {
+        return { ok: false, reason: "Este movimento nao pode mais ser cancelado." };
+      }
+
+      event.cancelledAt = nowISO();
+      event.cancelledBy = by;
+      event.cancelReason = reason || "Cancelado manualmente";
+      cancelledEventOverlays.set(String(event.id), {
+        cancelledAt: event.cancelledAt,
+        cancelledBy: event.cancelledBy,
+        cancelReason: event.cancelReason
+      });
+      return { ok: true, event, stockRestore: null };
+    },
+
+    async open({ initialAmount = 0, by = "system", notes = "" } = {}) {
+      assertCashStore();
+      const current = await getRemoteOpenSession();
+      if (current) {
+        sessionCache = current;
+        return { ok: false, reason: "Caixa ja esta aberto.", session: current };
+      }
+
+      const row = await window.CashStore.openSession({
+        openedBy: by,
+        openingCashCents: Math.round(normalizeMoney(initialAmount) * 100),
+        note: notes || ""
+      });
+      sessionCache = mapRemoteSession(row);
+      await addRemoteEvent(sessionCache.remoteSessionId, {
+        type: "OPEN",
+        by,
+        amount: normalizeMoney(initialAmount),
+        meta: { notes: notes || "" }
+      });
+      return { ok: true, session: sessionCache };
     },
 
     async close({ finalAmount = 0, by = "system", notes = "" } = {}) {
-      const session = loadSession();
-      if (!session || !session.isOpen) {
-        return { ok: false, reason: "Não existe caixa aberto para fechar.", session: session || null };
+      const session = await getRemoteOpenSession();
+      if (!session) {
+        return { ok: false, reason: "Nao existe caixa aberto para fechar.", session: null };
       }
 
-      session.isOpen = false;
-      session.closedAt = nowISO();
-      session.closedBy = by;
-      session.finalAmount = normalizeMoney(finalAmount);
-      if (notes) session.notes = notes;
-
-      saveSession(session);
-
-      addEvent({
-        id: uid("evt"),
+      const amount = normalizeMoney(finalAmount);
+      const row = await window.CashStore.closeSession({
+        sessionId: session.remoteSessionId,
+        closedBy: by,
+        closingCashCountedCents: Math.round(amount * 100),
+        note: notes || ""
+      });
+      await addRemoteEvent(session.remoteSessionId, {
         type: "CLOSE",
-        at: session.closedAt,
         by,
-        amount: session.finalAmount,
+        amount,
         meta: { notes: notes || "" }
       });
-
-  await syncCloseToSupabase(session);
-
-return { ok: true, session };
+      sessionCache = mapRemoteSession(row);
+      return { ok: true, session: sessionCache };
     },
 
-    supply({ amount, by = "system", notes = "" } = {}) {
-      if (!ensureOpenSession()) return { ok: false, reason: "Abra o caixa antes de lançar suprimento." };
-      const v = normalizeMoney(amount);
-      if (v <= 0) return { ok: false, reason: "Informe um valor válido (> 0)." };
-
-      const evt = addEvent({
-        id: uid("evt"),
+    async supply({ amount, by = "system", notes = "" } = {}) {
+      const session = await getRemoteOpenSession();
+      if (!session) return { ok: false, reason: "Abra o caixa antes de lancar suprimento." };
+      const value = normalizeMoney(amount);
+      if (value <= 0) return { ok: false, reason: "Informe um valor valido (> 0)." };
+      const event = await addRemoteEvent(session.remoteSessionId, {
         type: "SUPPLY",
-        at: nowISO(),
         by,
-        amount: v,
+        amount: value,
         meta: { notes: notes || "" }
       });
-
-      syncEventToSupabase(evt);
-
-      return { ok: true, event: evt };
+      return { ok: true, event };
     },
 
-    withdraw({ amount, by = "system", notes = "" } = {}) {
-      if (!ensureOpenSession()) return { ok: false, reason: "Abra o caixa antes de lançar sangria." };
-      const v = normalizeMoney(amount);
-      if (v <= 0) return { ok: false, reason: "Informe um valor válido (> 0)." };
-
-      const evt = addEvent({
-        id: uid("evt"),
+    async withdraw({ amount, by = "system", notes = "" } = {}) {
+      const session = await getRemoteOpenSession();
+      if (!session) return { ok: false, reason: "Abra o caixa antes de lancar sangria." };
+      const value = normalizeMoney(amount);
+      if (value <= 0) return { ok: false, reason: "Informe um valor valido (> 0)." };
+      const event = await addRemoteEvent(session.remoteSessionId, {
         type: "WITHDRAW",
-        at: nowISO(),
         by,
-        amount: v,
+        amount: value,
         meta: { notes: notes || "" }
       });
-
-      syncEventToSupabase(evt);
-
-      return { ok: true, event: evt };
+      return { ok: true, event };
     },
 
-    registerSale({ saleId, total, payments, costTotal = 0, profit = null, by = "system", meta = {} } = {}) {
-
-      if (!ensureOpenSession()) {
+    async registerSale({
+      saleId,
+      total,
+      payments,
+      costTotal = 0,
+      profit = null,
+      by = "system",
+      meta = {}
+    } = {}) {
+      const session = await getRemoteOpenSession();
+      if (!session) {
         return { ok: false, reason: "Caixa fechado. Abra o caixa para registrar vendas no log." };
       }
 
-      const pay = normalizePayments(payments);
-      const tot = normalizeMoney(total || (pay.cash + pay.pix + pay.cardCredit + pay.cardDebit));
-      if (tot <= 0) return { ok: false, reason: "Total inválido." };
+      const normalizedPayments = normalizePayments(payments);
+      const normalizedTotal = normalizeMoney(
+        total ||
+          normalizedPayments.cash +
+            normalizedPayments.pix +
+            normalizedPayments.cardCredit +
+            normalizedPayments.cardDebit
+      );
+      if (normalizedTotal <= 0) return { ok: false, reason: "Total invalido." };
 
-      const cost = normalizeMoney(costTotal || 0);
-
-// ✅ Se a Venda mandar profit (já líquido com taxa), usa ele.
-// Senão, mantém o fallback antigo (tot - cost).
-const profitNorm = (profit != null)
-  ? normalizeMoney(profit)
-  : normalizeMoney(tot - cost);
-
-
-      const evt = addEvent({
-        id: uid("evt"),
+      const normalizedCost = normalizeMoney(costTotal || 0);
+      const event = await addRemoteEvent(session.remoteSessionId, {
         type: "SALE",
-        at: nowISO(),
         by,
-        saleId: saleId || uid("sale"),
-        total: tot,
-        payments: pay,
-        costTotal: cost,
-        profit: profitNorm,
+        saleId,
+        total: normalizedTotal,
+        payments: normalizedPayments,
+        costTotal: normalizedCost,
+        profit: profit != null ? normalizeMoney(profit) : normalizeMoney(normalizedTotal - normalizedCost),
         meta: meta || {}
       });
-
-      syncEventToSupabase(evt);
-
-      return { ok: true, event: evt };
+      return { ok: true, event };
     },
 
-        async getSummary() {
-      const events = await this.getEvents();
-      const today = new Date();
-
-      const todayEvents = (events || []).filter(e => isSameDayBR(e.at, today));
-      return buildSummary(todayEvents);
+    async getSummary() {
+      return buildSummary(await this.getEvents());
     },
 
     async getTheoreticalCash() {
-      const s = await this.getSession();
+      const session = await this.getSession();
+      if (!session?.isOpen) return 0;
       const events = await this.getEvents();
-
-      const initial = s ? normalizeMoney(s.initialAmount) : 0;
-      const start = s?.openedAt ? new Date(s.openedAt).getTime() : null;
-
-      const sessionEvents = start
-        ? (events || []).filter(e => new Date(e.at).getTime() >= start)
-        : [];
-
+      const openedAt = new Date(session.openedAt).getTime();
+      const sessionEvents = events.filter((event) => new Date(event.at).getTime() >= openedAt);
       const summary = buildSummary(sessionEvents);
-      return round2(initial + summary.suppliesCash - summary.withdrawsCash + summary.byPayment.cash);
+      return round2(
+        normalizeMoney(session.initialAmount) +
+          summary.suppliesCash -
+          summary.withdrawsCash +
+          summary.byPayment.cash
+      );
     }
   };
 

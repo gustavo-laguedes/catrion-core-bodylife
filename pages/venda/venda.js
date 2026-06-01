@@ -1935,18 +1935,7 @@ refreshCardOptionsUI(null);
   }
 
 
-  // ===== Cash gate (fallback quando CoreCash não está carregado) =====
-const CASH_SESSION_KEY = "core.cash.session.v1";
-
-function cashSessionFallback(){
-  try{
-    const raw = localStorage.getItem(CASH_SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  }catch(e){
-    return null;
-  }
-}
-
+  // ===== Cash gate: valida sempre no Supabase =====
 async function isCashOpen(){
   // preferencial: CoreCash se existir
   if (window.CoreCash?.isOpen) {
@@ -1957,9 +1946,15 @@ async function isCashOpen(){
     }
   }
 
-  // fallback: session gravada pelo CoreCash
-  const s = cashSessionFallback();
-  return !!(s && s.isOpen);
+  if (window.CashStore?.getLatestOpenSession) {
+    try {
+      return !!(await window.CashStore.getLatestOpenSession());
+    } catch (err) {
+      console.warn("[VENDA] Falha ao consultar CashStore.getLatestOpenSession():", err);
+    }
+  }
+
+  return false;
 }
 
 async function refreshCashGateUI(){
@@ -2326,7 +2321,7 @@ saleDbId = saleRes?.saleId || null;
 if (!saleDbId) throw new Error("Falha: SalesStore não retornou saleId.");
 
 
-const cashRes = window.CoreCash.registerSale({
+const cashRes = await window.CoreCash.registerSale({
   saleId: saleDbId,
   total: t,
   payments,
