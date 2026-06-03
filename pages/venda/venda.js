@@ -434,7 +434,7 @@ if (cashNet || cashGiven){
     <div class="hr"></div>
 
     <div class="center small"><b>Body Life Suplementos</b></div>
-    <div class="center tiny">Bruno Moretti - ME</div>
+    <div class="center tiny">Rodolfo da Silva Flores - ME</div>
     <div class="center tiny">CNPJ: 17.182.850/0001-50</div>
     <div class="center tiny">Avenida Monsenhor Antonio do Nascimento Castro, 281</div>
     <div class="center tiny">Cavarucanguera • Taubate - SP</div>
