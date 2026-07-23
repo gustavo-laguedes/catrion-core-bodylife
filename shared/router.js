@@ -1,4 +1,26 @@
 (function () {
+  function installBarcodeScannerShortcutGuard() {
+    if (window.__coreBarcodeScannerShortcutGuardInstalled) return;
+
+    window.__coreBarcodeScannerShortcutGuardInstalled = true;
+
+    document.addEventListener("keydown", (event) => {
+      const currentPage = window.CoreRouterState?.current;
+      const target = event.target;
+      const isScannerField = target instanceof HTMLElement && target.id === "searchInput";
+      const isDownloadsShortcut =
+        (event.ctrlKey || event.metaKey) && String(event.key || "").toLowerCase() === "j";
+
+      if (currentPage !== "venda" || !isScannerField || !isDownloadsShortcut) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }, true);
+  }
+
+  installBarcodeScannerShortcutGuard();
+
   async function loadText(url) {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`Falha ao carregar: ${url} (${res.status})`);
